@@ -9,7 +9,7 @@ with open(AUTH_FILE, 'r') as f:
 	bot_token = f.read().strip()
 CLIENT = SlackClient(bot_token)
 RTM_READ_DELAY = 1
-COMMAND_TRIGGERS = {"do", "who", "leave", "say"}
+COMMAND_TRIGGERS = {"do", "who", "leave", "say", "tell"}
 MENTION_REGEX = "^<@(|[WU].+?)>(.*)"
 USER_REGEX = "<@(|[WU].+?)>"
 
@@ -20,13 +20,22 @@ class SlackBot(object):
 		if self.client.rtm_connect(with_team_state=False):
 			print("Connected")
 			self.running = True
-			self.bot_id = self.client.api_call("auth.test")["user_id"]
+			self.bot_id = self.api_call("auth.test")["user_id"]
 			self.getUsers()
 		else:
 			print("Failed to connect")
 
+	def api_call(self, *args, **kwargs):
+		if "text" in kwargs:
+			print("RESPONSE:", kwargs["text"])
+		response = self.client.api_call(*args, **kwargs)
+		if response["ok"] is False:
+			print("ERROR:", response["error"])
+			return {}
+		return response
+
 	def getUsers(self):
-		users_list = self.client.api_call("users.list")
+		users_list = self.api_call("users.list")
 		self.users = {}
 		if "members" in users_list:
 			for member in users_list["members"]:
@@ -40,7 +49,6 @@ class SlackBot(object):
 			self.handleCommand(command, channel)
 
 	def parseMention(self, message):
-		print(message)
 		matches = re.search(MENTION_REGEX, message)
 		return (matches.group(1), matches.group(2).strip()) if matches else (None, None)
 
@@ -51,7 +59,7 @@ class SlackBot(object):
 				if user_id == self.bot_id:
 					return message, event["channel"]
 			else:
-				pass #print(event)
+				pass
 		return None, None
 
 	def handleResponse(self, command, params):
@@ -64,6 +72,21 @@ class SlackBot(object):
 			return "Goodbye"
 		if command == "say":
 			return params
+		if command == "tell":
+			user_id, message = self.parseMention(params)
+			if user_id in self.users and message:
+				channel = self.getIM(user_id)
+				if channel is not None:
+					self.api_call("chat.postMessage", channel=channel, text=message)
+				return None
+			else:
+				return "I don't know who that is"
+
+	def getIM(self, user_id):
+		im = self.api_call("im.open", user=user_id)
+		if "channel" in im:
+			return im["channel"]["id"]
+		return None
 
 	def formatResponse(self, response):
 		pass
@@ -75,8 +98,8 @@ class SlackBot(object):
 		params = split[1] if len(split) > 1 else None
 		if cmd in COMMAND_TRIGGERS:
 			response = self.handleResponse(cmd, params)
-		print(response)
-		self.client.api_call("chat.postMessage", channel=channel, text=response or "What?")
+		if response is not None:
+			self.api_call("chat.postMessage", channel=channel, text=response)
 
 if __name__ == "__main__":
 	bot = SlackBot(CLIENT)
