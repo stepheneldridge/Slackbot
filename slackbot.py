@@ -1,6 +1,7 @@
 import time
 import re
 from slackclient import SlackClient
+from decimal import Decimal
 
 AUTH_FILE = "bot.auth"
 
@@ -118,15 +119,16 @@ class SlackBot(object):
 			self.api_call("chat.postMessage", channel=channel, text=response)
 
 	def calculate(self, input):
-		reg = '(\d+|[\+\-\*\/])'
-		matches = re.findall(reg, input)
+		reg = r'((?:(?<!\d)(?<!\d\s)\-)?\d*\.?\d+(?:[Ee][\+\-]\d+)?|[\+\-\*\/])'
+		matches = re.findall(reg, re.sub('\s+', ' ', input).strip())
 		answer = 0
 		operation = '='
+		print(matches)
 		for i in matches:
 			if i is '':
 				continue
 			try:
-				a = int(i)
+				a = Decimal(i)
 				if operation is '=':
 					answer = a
 				elif operation is '+':
@@ -139,6 +141,7 @@ class SlackBot(object):
 					answer /= a if a is not 0 else 1
 				else:
 					print("Invalid operation")
+				#operation = '+'
 			except:
 				operation = i
 		return str(answer)
