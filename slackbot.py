@@ -9,7 +9,7 @@ with open(AUTH_FILE, 'r') as f:
 	bot_token = f.read().strip()
 CLIENT = SlackClient(bot_token)
 RTM_READ_DELAY = 1
-COMMAND_TRIGGERS = {"do", "who", "leave", "say", "tell"}
+COMMAND_TRIGGERS = {"do", "who", "leave", "say", "tell", "annoy", "calc"}
 MENTION_REGEX = "^<@(|[WU].+?)>(.*)"
 USER_REGEX = "<@(|[WU].+?)>"
 
@@ -17,6 +17,7 @@ USER_REGEX = "<@(|[WU].+?)>"
 class SlackBot(object):
 	def __init__(self, client):
 		self.client = client
+		self.annoyee = None
 		if self.client.rtm_connect(with_team_state=False):
 			print("Connected")
 			self.running = True
@@ -39,7 +40,7 @@ class SlackBot(object):
 		self.users = {}
 		if "members" in users_list:
 			for member in users_list["members"]:
-				self.users[member["id"]] = member["name"]
+				self.users[member["id"]] = member["profile"]["display_name"]  or member["profile"]["real_name"] or member["name"]
 		else:
 			print("Could not load users")
 
@@ -56,8 +57,11 @@ class SlackBot(object):
 		for event in events:
 			if event["type"] == "message" and not "subtype" in event:
 				user_id, message = self.parseMention(event["text"])
+				print(self.users[event["user"]], ':', event["text"])
 				if user_id == self.bot_id:
 					return message, event["channel"]
+				elif event["user"] == self.annoyee:
+					return "say {}".format(event["text"]), event["channel"]
 			else:
 				pass
 		return None, None
@@ -74,13 +78,25 @@ class SlackBot(object):
 			return params
 		if command == "tell":
 			user_id, message = self.parseMention(params)
-			if user_id in self.users and message:
-				channel = self.getIM(user_id)
-				if channel is not None:
-					self.api_call("chat.postMessage", channel=channel, text=message)
-				return None
-			else:
+			if user_id not in self.users:
 				return "I don't know who that is"
+			if not message:
+				return "I can't tell someone nothing"
+			channel = self.getIM(user_id)
+			if channel is not None:
+				self.api_call("chat.postMessage", channel=channel, text=message)
+			return None
+		if command == "annoy":
+			if params.startswith("stop"):
+				self.annoyee = None
+				return "Fine"
+			user_id = re.search(USER_REGEX, params).group(1)
+			if user_id not in self.users:
+				return "I don't know who that is"
+			self.annoyee = user_id
+			return "Okay"
+		if command == "calc":
+			return self.calculate(params)
 
 	def getIM(self, user_id):
 		im = self.api_call("im.open", user=user_id)
@@ -100,6 +116,33 @@ class SlackBot(object):
 			response = self.handleResponse(cmd, params)
 		if response is not None:
 			self.api_call("chat.postMessage", channel=channel, text=response)
+
+	def calculate(self, input):
+		reg = '(\d+|[\+\-\*\/])'
+		matches = re.findall(reg, input)
+		answer = 0
+		operation = '='
+		for i in matches:
+			if i is '':
+				continue
+			try:
+				a = int(i)
+				if operation is '=':
+					answer = a
+				elif operation is '+':
+					answer += a
+				elif operation is '-':
+					answer -= a
+				elif operation is '*':
+					answer *= a
+				elif operation is '/':
+					answer /= a if a is not 0 else 1
+				else:
+					print("Invalid operation")
+			except:
+				operation = i
+		return str(answer)
+
 
 if __name__ == "__main__":
 	bot = SlackBot(CLIENT)
