@@ -202,13 +202,15 @@ class SlackBot(object):
 		return postfixList
 
 	def calculate(self, input):
-		reg = r'((?:(?<!\d)(?<!\d\s)\-)?\d*\.?\d+(?:[Ee][\+\-]\d+)?|\S)'
+		reg = r'((?:(?<!\d)(?<!\d\s)\-)?\d*[\.,]?\d+(?:[Ee][\+\-]\d+)?|\S)'
 		matches = re.findall(reg, re.sub('\s+', ' ', input).strip())
+		print(matches)
 		postfix = self.infixToPostfix(matches)
+		print(postfix)
 		stack = []
 		for i in postfix:
 			try:
-				a = Decimal(i)
+				a = Decimal(i.replace(",", "."))
 				stack.append(a)
 			except:
 				if len(stack) < 1:
