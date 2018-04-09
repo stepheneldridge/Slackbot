@@ -1,5 +1,7 @@
 import time
 import re
+import math
+import json
 from slackclient import SlackClient
 from decimal import Decimal
 
@@ -10,7 +12,7 @@ with open(AUTH_FILE, 'r') as f:
 	bot_token = f.read().strip()
 CLIENT = SlackClient(bot_token)
 RTM_READ_DELAY = 1
-COMMAND_TRIGGERS = {"do", "who", "leave", "say", "tell", "annoy", "calc"}
+COMMAND_TRIGGERS = {"do", "who", "leave", "say", "tell", "annoy", "calc", "pizza"}
 MENTION_REGEX = "^<@(|[WU].+?)>(.*)"
 USER_REGEX = "<@(|[WU].+?)>"
 
@@ -19,13 +21,17 @@ class SlackBot(object):
 	def __init__(self, client):
 		self.client = client
 		self.annoyee = None
+		try:
+			self.load()
+		except:
+			print("SYSTEM: No Data File")
 		if self.client.rtm_connect(with_team_state=False):
-			print("Connected")
+			print("SYSTEM: Connected")
 			self.running = True
 			self.bot_id = self.api_call("auth.test")["user_id"]
 			self.getUsers()
 		else:
-			print("Failed to connect")
+			print("ERROR: Failed to connect")
 
 	def api_call(self, *args, **kwargs):
 		if "text" in kwargs:
@@ -43,7 +49,7 @@ class SlackBot(object):
 			for member in users_list["members"]:
 				self.users[member["id"]] = member["profile"]["display_name"]  or member["profile"]["real_name"] or member["name"]
 		else:
-			print("Could not load users")
+			print("ERROR: Could not load users")
 
 	def read(self):
 		command, channel = self.parseCommand(self.client.rtm_read())
@@ -98,6 +104,56 @@ class SlackBot(object):
 			return "Okay"
 		if command == "calc":
 			return self.calculate(params)
+		if command == "pizza":
+			try:
+				response = self.handlePizza(params)
+				self.save()
+				return response
+			except:
+				return "Invalid pizza commands"
+
+	def save(self):
+		data = {
+			"pizzas": self.pizzas
+		}
+		with open("data.json", "w+") as out:
+			json.dump(data, out)
+
+	def load(self):
+		with open("data.json", "r") as data:
+				file_data = json.load(data)
+				self.pizzas = file_data.get("pizzas", {})
+
+	def handlePizza(self, input):
+		if not hasattr(self, "pizzas"):
+			self.pizzas = {}
+		params = input.split()
+		user_id = re.search(USER_REGEX, params[1]).group(1) if len(params) > 1 else None
+		if params[0] == "set":
+			if user_id in self.users:
+				self.pizzas[user_id] = int(params[2])
+				return "{0} now has {1} pizza{2}".format(params[1], params[2], "s" if int(params[2]) is not 1 else "")
+			else:
+				return "Unknown user: {}".format(params[1])
+		elif params[0] == "list":
+			output = ""
+			for i, v in self.pizzas.items():
+				output += "<@{0}> has {1} pizza{2}\n".format(i, v, "s" if v is not 1 else "")
+			return output if output is not "" else "No one has pizzas"
+		elif params[0] == "forget":
+			if user_id in self.users and user_id in self.pizzas:
+				del self.pizzas[user_id]
+			return "<@{}> has been forgotten".format(user_id)
+		elif params[0] == "add":
+			if user_id in self.users:
+				if user_id in self.pizzas:
+					self.pizzas[user_id] += 1
+				else:
+					self.pizzas[user_id] = 1
+				return "{0} now has {1} pizza{2}".format(params[1], self.pizzas[user_id], "s" if self.pizzas[user_id] is not 1 else "")
+			else:
+				return "Unknown user: {}".format(params[1])
+
 
 	def getIM(self, user_id):
 		im = self.api_call("im.open", user=user_id)
@@ -114,37 +170,71 @@ class SlackBot(object):
 		cmd = split[0].lower() if len(split) > 0 else None
 		params = split[1] if len(split) > 1 else None
 		if cmd in COMMAND_TRIGGERS:
-			response = self.handleResponse(cmd, params)
+			try:
+				response = self.handleResponse(cmd, params)
+			except Exception as e:
+				response = type(e)
 		if response is not None:
 			self.api_call("chat.postMessage", channel=channel, text=response)
 
-	def calculate(self, input):
-		reg = r'((?:(?<!\d)(?<!\d\s)\-)?\d*\.?\d+(?:[Ee][\+\-]\d+)?|[\+\-\*\/])'
-		matches = re.findall(reg, re.sub('\s+', ' ', input).strip())
-		answer = 0
-		operation = '='
-		print(matches)
-		for i in matches:
-			if i is '':
+	def infixToPostfix(self, input):
+		level = {"^": 4, "*": 3, "/": 3, "+": 2, "-": 2, "(": 1}
+		stack = []
+		postfixList = []
+		for i in input:
+			if i == '(':
+				stack.append(i)
+			elif i == ')':
+				top = stack.pop()
+				while top != '(':
+					postfixList.append(top)
+					top = stack.pop()
+			elif len(i) > 1 or i[0].isdigit() or i == "!":
+				postfixList.append(i)
+			elif i == '':
 				continue
+			else:
+				while len(stack) > 0 and level.get(stack[-1], 1) >= level.get(i, 1):
+					postfixList.append(stack.pop())
+				stack.append(i)
+		while len(stack) > 0:
+			postfixList.append(stack.pop())
+		return postfixList
+
+	def calculate(self, input):
+		reg = r'((?:(?<!\d)(?<!\d\s)\-)?\d*\.?\d+(?:[Ee][\+\-]\d+)?|\S)'
+		matches = re.findall(reg, re.sub('\s+', ' ', input).strip())
+		postfix = self.infixToPostfix(matches)
+		stack = []
+		for i in postfix:
 			try:
 				a = Decimal(i)
-				if operation is '=':
-					answer = a
-				elif operation is '+':
-					answer += a
-				elif operation is '-':
-					answer -= a
-				elif operation is '*':
-					answer *= a
-				elif operation is '/':
-					answer /= a if a is not 0 else 1
-				else:
-					print("Invalid operation")
-				#operation = '+'
+				stack.append(a)
 			except:
-				operation = i
-		return str(answer)
+				if len(stack) < 1:
+					return "Too many operators"
+				c = 0
+				b = stack.pop()
+				if i is '!':
+					c = math.factorial(b)
+				else:
+					if len(stack) < 1:
+						return "Too many operators"
+					a = stack.pop()
+					if i is '+':
+						c = a + b
+					elif i is '-':
+						c = a - b
+					elif i is '*':
+						c = a * b
+					elif i is '/':
+						c = a / b
+					elif i is '^':
+						c = a ** b
+					else:
+						return "Invalid operation: {}".format(i)
+				stack.append(c)
+		return str(stack[-1])
 
 
 if __name__ == "__main__":
@@ -152,4 +242,4 @@ if __name__ == "__main__":
 	while bot.running:
 		bot.read()
 		time.sleep(RTM_READ_DELAY)
-	print("Bot has stopped")
+	print("SYSTEM: Bot has stopped")
