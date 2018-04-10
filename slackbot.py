@@ -12,7 +12,7 @@ with open(AUTH_FILE, 'r') as f:
 	bot_token = f.read().strip()
 CLIENT = SlackClient(bot_token)
 RTM_READ_DELAY = 1
-COMMAND_TRIGGERS = {"do", "who", "leave", "say", "tell", "annoy", "calc", "pizza"}
+COMMAND_TRIGGERS = {"do", "who", "leave", "say", "tell", "annoy", "calc", "pizza", "store", "save"}
 MENTION_REGEX = "^<@(|[WU].+?)>(.*)"
 USER_REGEX = "<@(|[WU].+?)>"
 
@@ -76,14 +76,14 @@ class SlackBot(object):
 	def handleResponse(self, command, params):
 		if command == "do":
 			return "I will not do {}".format(params)
-		if command == "who":
+		elif command == "who":
 			return "I don't know"
-		if command == "leave":
+		elif command == "leave":
 			self.running = False
 			return "Goodbye"
-		if command == "say":
+		elif command == "say":
 			return params
-		if command == "tell":
+		elif command == "tell":
 			user_id, message = self.parseMention(params)
 			if user_id not in self.users:
 				return "I don't know who that is"
@@ -93,7 +93,7 @@ class SlackBot(object):
 			if channel is not None:
 				self.api_call("chat.postMessage", channel=channel, text=message)
 			return None
-		if command == "annoy":
+		elif command == "annoy":
 			if params.startswith("stop"):
 				self.annoyee = None
 				return "Fine"
@@ -102,27 +102,40 @@ class SlackBot(object):
 				return "I don't know who that is"
 			self.annoyee = user_id
 			return "Okay"
-		if command == "calc":
+		elif command == "calc":
 			return self.calculate(params)
-		if command == "pizza":
+		elif command == "store":
+			if len(params) > 0 and params[0].isalpha():
+				if getattr(self, "last_answer", None) is None:
+					return "No value to store"
+				self.stored[params[0].upper()] = str(self.last_answer)
+				return "{} stored in {}".format(self.last_answer, params[0].upper())
+			else:
+				return "Invalid store"
+		elif command == "pizza":
 			try:
-				response = self.handlePizza(params)
-				self.save()
-				return response
+				return self.handlePizza(params)
 			except:
 				return "Invalid pizza commands"
+		elif command == "save":
+			self.save()
+			return "Save successful"
 
 	def save(self):
 		data = {
-			"pizzas": self.pizzas
+			"pizzas": getattr(self, "pizzas", {}),
+			"stored": getattr(self, "stored", {})
 		}
 		with open("data.json", "w+") as out:
 			json.dump(data, out)
+			print("SYSTEM: Save Successful")
 
 	def load(self):
 		with open("data.json", "r") as data:
-				file_data = json.load(data)
-				self.pizzas = file_data.get("pizzas", {})
+			file_data = json.load(data)
+			self.pizzas = file_data.get("pizzas", {})
+			self.stored = file_data.get("stored", {})
+			print("SYSTEM: Load Successful")
 
 	def handlePizza(self, input):
 		if not hasattr(self, "pizzas"):
@@ -173,15 +186,28 @@ class SlackBot(object):
 			try:
 				response = self.handleResponse(cmd, params)
 			except Exception as e:
+				print(e)
 				response = type(e)
 		if response is not None:
 			self.api_call("chat.postMessage", channel=channel, text=response)
 
 	def infixToPostfix(self, input):
-		level = {"^": 4, "*": 3, "/": 3, "+": 2, "-": 2, "(": 1}
+		level = {"^": 4, "*": 3, "/": 3, "%": 3, "+": 2, "-": 2, "(": 1}
+		prefixUnary = math.__dict__
+		prefixUnary["abs"] = abs
 		stack = []
 		postfixList = []
 		for i in input:
+			if i == 'pi':
+				i = str(math.pi)
+			elif i == 'e':
+				i = str(math.e)
+			elif i == 'phi':
+				i = str((1 + math.sqrt(5)) / 2)
+			elif i == 'ans':
+				i = str(self.last_answer)
+			elif len(i) == 1 and i.isalpha() and i.isupper():
+				i = str(self.stored.get(i, 0))
 			if i == '(':
 				stack.append(i)
 			elif i == ')':
@@ -189,6 +215,10 @@ class SlackBot(object):
 				while top != '(':
 					postfixList.append(top)
 					top = stack.pop()
+				if len(stack) > 0 and stack[-1] in prefixUnary:
+					postfixList.append(stack.pop())
+			elif i in prefixUnary:
+				stack.append(i)
 			elif len(i) > 1 or i[0].isdigit() or i == "!":
 				postfixList.append(i)
 			elif i == '':
@@ -202,7 +232,7 @@ class SlackBot(object):
 		return postfixList
 
 	def calculate(self, input):
-		reg = r'((?:(?<!\d)(?<!\d\s)\-)?\d*[\.,]?\d+(?:[Ee][\+\-]\d+)?|\S)'
+		reg = r'((?:(?<!\d)(?<!\d\s)\-)?\d*[\.,]?\d+(?:[Ee][\+\-]\d+)?|\w+|\S)'
 		matches = re.findall(reg, re.sub('\s+', ' ', input).strip())
 		print(matches)
 		postfix = self.infixToPostfix(matches)
@@ -219,6 +249,12 @@ class SlackBot(object):
 				b = stack.pop()
 				if i is '!':
 					c = math.factorial(b)
+				elif i in math.__dict__:
+					c = Decimal(math.__dict__[i](b))
+				elif i is 'abs':
+					c = abs(b)
+				elif len(stack) == 0 and i is '-':
+					c = -b
 				else:
 					if len(stack) < 1:
 						return "Too many operators"
@@ -233,15 +269,27 @@ class SlackBot(object):
 						c = a / b
 					elif i is '^':
 						c = a ** b
+					elif i is '%':
+						c = a % b
 					else:
 						return "Invalid operation: {}".format(i)
 				stack.append(c)
-		return str(stack[-1])
+		if math.isclose(stack[-1] % 1, 0, abs_tol=10**-15):
+			stack[-1] = math.floor(stack[-1])
+		elif math.isclose(stack[-1] % 1, 1, abs_tol=10**-15):
+			stack[-1] = math.ceil(stack[-1])
+		self.last_answer = stack[-1]
+		return str(self.last_answer)
 
 
 if __name__ == "__main__":
 	bot = SlackBot(CLIENT)
-	while bot.running:
-		bot.read()
-		time.sleep(RTM_READ_DELAY)
+	try:
+		while bot.running:
+			bot.read()
+			time.sleep(RTM_READ_DELAY)
+	except KeyboardInterrupt:
+		print("SYSTEM: Stopped in Terminal")
+	finally:
+		bot.save()
 	print("SYSTEM: Bot has stopped")
