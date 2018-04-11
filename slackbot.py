@@ -4,9 +4,13 @@ import math
 import json
 from slackclient import SlackClient
 from decimal import Decimal
+import logging
+import logging.config
 
 AUTH_FILE = "bot.auth"
 
+logging.config.fileConfig('log.conf')
+logger = logging.getLogger(__name__)
 bot_token = None
 with open(AUTH_FILE, 'r') as f:
 	bot_token = f.read().strip()
@@ -24,21 +28,21 @@ class SlackBot(object):
 		try:
 			self.load()
 		except:
-			print("SYSTEM: No Data File")
+			logger.info("No Data File")
 		if self.client.rtm_connect(with_team_state=False):
-			print("SYSTEM: Connected")
+			logger.info("Connected")
 			self.running = True
 			self.bot_id = self.api_call("auth.test")["user_id"]
 			self.getUsers()
 		else:
-			print("ERROR: Failed to connect")
+			logger.error("Failed to connect")
 
 	def api_call(self, *args, **kwargs):
 		if "text" in kwargs:
-			print("RESPONSE:", kwargs["text"])
+			logger.debug("RESPONSE - %s" % kwargs["text"])
 		response = self.client.api_call(*args, **kwargs)
 		if response["ok"] is False:
-			print("ERROR:", response["error"])
+			logger.error(response["error"])
 			return {}
 		return response
 
@@ -49,7 +53,7 @@ class SlackBot(object):
 			for member in users_list["members"]:
 				self.users[member["id"]] = member["profile"]["display_name"]  or member["profile"]["real_name"] or member["name"]
 		else:
-			print("ERROR: Could not load users")
+			logger.error("Could not load users")
 
 	def read(self):
 		command, channel = self.parseCommand(self.client.rtm_read())
@@ -64,13 +68,13 @@ class SlackBot(object):
 		for event in events:
 			if event["type"] == "message" and not "subtype" in event:
 				user_id, message = self.parseMention(event["text"])
-				print(self.users[event["user"]], ':', event["text"])
+				logger.debug("%s - %s" % (self.users[event["user"]], event["text"]))
 				if user_id == self.bot_id:
 					return message, event["channel"]
 				elif event["user"] == self.annoyee:
 					return "say {}".format(event["text"]), event["channel"]
-			else:
-				pass
+			elif event["type"] == "error":
+				logger.warning(event["msg"])
 		return None, None
 
 	def handleResponse(self, command, params):
@@ -128,14 +132,14 @@ class SlackBot(object):
 		}
 		with open("data.json", "w+") as out:
 			json.dump(data, out)
-			print("SYSTEM: Save Successful")
+			logger.info("Save Successful")
 
 	def load(self):
 		with open("data.json", "r") as data:
 			file_data = json.load(data)
 			self.pizzas = file_data.get("pizzas", {})
 			self.stored = file_data.get("stored", {})
-			print("SYSTEM: Load Successful")
+			logger.info("Load Successful")
 
 	def handlePizza(self, input):
 		if not hasattr(self, "pizzas"):
@@ -186,7 +190,7 @@ class SlackBot(object):
 			try:
 				response = self.handleResponse(cmd, params)
 			except Exception as e:
-				print(e)
+				logger.debug(e)
 				response = type(e)
 		if response is not None:
 			self.api_call("chat.postMessage", channel=channel, text=response)
@@ -205,7 +209,7 @@ class SlackBot(object):
 			elif i == 'phi':
 				i = str((1 + math.sqrt(5)) / 2)
 			elif i == 'ans':
-				i = str(self.last_answer)
+				i = str(getattr(self, "last_answer", 0))
 			elif len(i) == 1 and i.isalpha() and i.isupper():
 				i = str(self.stored.get(i, 0))
 			if i == '(':
@@ -234,9 +238,9 @@ class SlackBot(object):
 	def calculate(self, input):
 		reg = r'((?:(?<!\d)(?<!\d\s)\-)?\d*[\.,]?\d+(?:[Ee][\+\-]\d+)?|\w+|\S)'
 		matches = re.findall(reg, re.sub('\s+', ' ', input).strip())
-		print(matches)
+		logger.debug(matches)
 		postfix = self.infixToPostfix(matches)
-		print(postfix)
+		logger.debug(postfix)
 		stack = []
 		for i in postfix:
 			try:
@@ -289,7 +293,7 @@ if __name__ == "__main__":
 			bot.read()
 			time.sleep(RTM_READ_DELAY)
 	except KeyboardInterrupt:
-		print("SYSTEM: Stopped in Terminal")
+		logger.info("Stopped in Terminal")
 	finally:
 		bot.save()
-	print("SYSTEM: Bot has stopped")
+	logger.info("Bot has stopped")
