@@ -1,11 +1,11 @@
-import time
-import re
-import math
 import json
-from slackclient import SlackClient
-from decimal import Decimal
 import logging
 import logging.config
+import math
+import re
+import time
+from decimal import Decimal
+from slackclient import SlackClient
 
 AUTH_FILE = "bot.auth"
 
@@ -25,6 +25,7 @@ class SlackBot(object):
 	def __init__(self, client):
 		self.client = client
 		self.annoyee = None
+		self.calculator = Calculator(logger.warning)
 		try:
 			self.load()
 		except:
@@ -51,7 +52,7 @@ class SlackBot(object):
 		self.users = {}
 		if "members" in users_list:
 			for member in users_list["members"]:
-				self.users[member["id"]] = member["profile"]["display_name"]  or member["profile"]["real_name"] or member["name"]
+				self.users[member["id"]] = member["profile"]["display_name"] or member["profile"]["real_name"] or member["name"]
 		else:
 			logger.error("Could not load users")
 
@@ -67,6 +68,7 @@ class SlackBot(object):
 	def parseCommand(self, events):
 		for event in events:
 			if event["type"] == "message" and not "subtype" in event:
+				event["text"] = event["text"].replace("&gt;", ">")
 				user_id, message = self.parseMention(event["text"])
 				logger.debug("%s - %s" % (self.users[event["user"]], event["text"]))
 				if user_id == self.bot_id:
@@ -107,7 +109,7 @@ class SlackBot(object):
 			self.annoyee = user_id
 			return "Okay"
 		elif command == "calc":
-			return self.calculate(params)
+			return self.calculator.calculate(params)  # self.calculate(params)
 		elif command == "store":
 			if len(params) > 0 and params[0].isalpha():
 				if getattr(self, "last_answer", None) is None:
@@ -284,6 +286,176 @@ class SlackBot(object):
 			stack[-1] = math.ceil(stack[-1])
 		self.last_answer = stack[-1]
 		return str(self.last_answer)
+
+
+class Calculator(object):
+	def __init__(self, logger):
+		self.functions = {i: v for i,v in math.__dict__.items() if not i.startswith('_')}
+		self.functions['abs'] = abs
+		self.functions["~"] = Calculator.negate
+		self.functions["clear"] = self.clear_store
+		self._logger = logger
+		self.ans = None
+		self.stored = {}
+
+	def log_message(self, message, mtype="TEST"):
+		self._logger("%s - %s" % (mtype, message))
+
+	def calculate(self, text):
+		temp = self.parse(text)
+		self.log_message(temp)
+		if temp is not []:
+			self.ans = self._calculate(self.infixToPostfix(temp))
+			return self.ans
+		return None
+
+	@staticmethod
+	def negate(x):
+		return -x
+
+	def clear_store(self, x):
+		if x in self.stored:
+			del self.stored[x]
+		return 0
+
+	def infixToPostfix(self, input):
+		level = {"->": 5, "^": 4, "*": 3, "/": 3, "%": 3, "+": 2, "-": 2, "(": 1}
+		stack = []
+		postfixList = []
+		for i in input:
+			if i == 'pi':
+				i = str(math.pi)
+			elif i == 'e':
+				i = str(math.e)
+			elif i == 'phi':
+				i = str((1 + math.sqrt(5)) / 2)
+			elif i == 'ans':
+				i = str(self.ans if self.ans else 0)
+			if i == '(':
+				stack.append(i)
+			elif i == ')':
+				top = stack.pop()
+				while top != '(':
+					postfixList.append(top)
+					top = stack.pop()
+				if len(stack) > 0 and stack[-1] in self.functions:
+					postfixList.append(stack.pop())
+			elif i in self.functions:
+				stack.append(i)
+			elif i not in level and (len(i) > 1 or i[0].isdigit() or i == "!" or i.isupper()):
+				postfixList.append(i)
+			elif i == '':
+				continue
+			else:
+				while len(stack) > 0 and (level.get(stack[-1], 1) >= level.get(i, 1) or stack[-1] in self.functions):
+					postfixList.append(stack.pop())
+				stack.append(i)
+		while len(stack) > 0:
+			postfixList.append(stack.pop())
+		self.log_message(postfixList)
+		return postfixList
+
+	def _calculate(self, postfix):
+		stack = []
+		for i in postfix:
+			try:
+				if len(i) == 1 and i.isupper():
+					a = i
+				else:
+					a = Decimal(i)
+				stack.append(a)
+			except:
+				if len(stack) < 1:
+					return "Too many operators"
+				c = 0
+				b = stack.pop()
+				if i is '!':
+					c = math.factorial(b)
+				elif i in self.functions:
+					c = Decimal(self.functions[i](b))
+				else:
+					if len(stack) < 1:
+						return "Too many operators"
+					a = stack.pop()
+					if i == '->':
+						if type(b) is str:
+							self.stored[b] = a
+						c = a
+					else:
+						if a in self.stored:
+							a = self.stored[a]
+						if b in self.stored:
+							b = self.stored[b]
+						if i is '+':
+							c = a + b
+						elif i is '-':
+							c = a - b
+						elif i is '*':
+							c = a * b
+						elif i is '/':
+							c = a / b
+						elif i is '^':
+							c = a ** b
+						elif i is '%':
+							c = a % b
+						else:
+							return "Invalid operation: {}".format(i)
+				stack.append(c)
+		if stack[-1] in self.stored:
+			stack[-1] = self.stored[stack[-1]]
+		if isinstance(stack[-1], Decimal):
+			if math.isclose(stack[-1] % 1, 0, abs_tol=10**-15):
+				stack[-1] = math.floor(stack[-1])
+			elif math.isclose(stack[-1] % 1, 1, abs_tol=10**-15):
+				stack[-1] = math.ceil(stack[-1])
+		return stack[-1]
+
+	def parse(self, text):
+		buffer = ""
+		out_list = []
+		for i in text:
+			if i in ['\n','\t',' ','\r']:
+				out_list.append(buffer)
+				buffer = ""
+			elif buffer is "":
+				buffer += i;
+			elif buffer is "-":
+				if i is ">":
+					out_list.append("->")
+					buffer = ""
+				elif len(out_list) > 0 and (out_list[-1][0].isalnum() or out_list[-1][0] in ".)") and out_list[-1] not in self.functions:
+					out_list.append(buffer)
+					buffer = i
+				elif i.isdigit() or i is ".":
+					out_list.append("~")
+					buffer = i
+				elif i is "-":
+					if len(out_list) > 0 and (out_list[-1][0].isalnum() or out_list[-1][0] in ".)") and out_list[-1] not in self.functions:
+						buffer = "+"
+					else:
+						buffer = ""
+				elif i is "+":
+					pass
+				else:
+					out_list.append("~") # negative
+					buffer = i
+			elif i in "1234567890.":
+				if buffer[0].isalnum() or buffer[0] in ".-":
+					buffer += i
+				else:
+					out_list.append(buffer)
+					buffer = i
+			elif i.isalpha():
+				if buffer.isalnum():
+					buffer += i
+				else:
+					out_list.append(buffer)
+					buffer = i
+			else:
+				out_list.append(buffer)
+				buffer = i
+		out_list.append(buffer)
+		return out_list
 
 
 if __name__ == "__main__":
